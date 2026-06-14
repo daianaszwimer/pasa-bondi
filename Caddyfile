@@ -3,7 +3,7 @@
 	auto_https off
 }
 
-:{$PORT:8000} {
+:8000 {
 	root * /srv
 	file_server
 	encode gzip
