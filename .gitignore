@@ -1,0 +1,7 @@
+# Raw GTFS source files — huge (stop_times.txt ~1.4 GB). Regenerate data/stops.json
+# from them with build_data.py, then they can be deleted. Never commit them.
+*.txt
+
+# OS / editor junk
+.DS_Store
+.idea/

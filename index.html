@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>¿Pasa el bondi? — Colectivos CABA</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --fg:#e8eaed; --muted:#9aa0a6; --accent:#4dd4ac; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--fg);
+         display:flex; flex-direction:column; align-items:center; padding:2rem 1rem; min-height:100vh; }
+  h1 { font-size:1.6rem; margin:0 0 .25rem; }
+  p.sub { color:var(--muted); margin:0 0 1.5rem; text-align:center; }
+  .box { width:100%; max-width:640px; }
+  form { display:flex; gap:.5rem; margin-bottom:1rem; }
+  input, button, select { font-size:1rem; padding:.7rem .9rem; border-radius:.6rem; border:1px solid #2c3038; }
+  input { flex:1; background:var(--card); color:var(--fg); }
+  select { background:var(--card); color:var(--fg); }
+  button { background:var(--accent); color:#06281f; font-weight:600; border:none; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:.5rem; align-items:center; margin-bottom:1rem; color:var(--muted); font-size:.9rem; }
+  #status { min-height:1.4rem; color:var(--muted); margin-bottom:1rem; }
+  .stop { background:var(--card); border-radius:.7rem; padding:.9rem 1rem; margin-bottom:.7rem; }
+  .stop h3 { margin:0 0 .15rem; font-size:1rem; }
+  .stop .dist { color:var(--muted); font-size:.85rem; margin-bottom:.5rem; }
+  .lines { display:flex; flex-wrap:wrap; gap:.35rem; }
+  .line { background:#06281f; color:var(--accent); border:1px solid #1f5e4c; padding:.15rem .5rem;
+          border-radius:.4rem; font-size:.85rem; font-weight:600; }
+  .summary { background:#11261f; border:1px solid #1f5e4c; border-radius:.7rem; padding:.9rem 1rem;
+             margin-bottom:1rem; }
+  .summary .lines { margin-top:.5rem; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <h1>¿Pasa el bondi? 🚌</h1>
+    <p class="sub">Escribí una dirección de CABA y mirá qué colectivos paran cerca.</p>
+    <form id="form">
+      <input id="addr" placeholder="Ej: Av. Corrientes 1234, CABA" autocomplete="off" required>
+      <button id="go" type="submit">Buscar</button>
+    </form>
+    <div class="row">
+      Radio:
+      <select id="radius">
+        <option value="300">300 m</option>
+        <option value="500" selected>500 m</option>
+        <option value="800">800 m</option>
+      </select>
+    </div>
+    <div id="status"></div>
+    <div id="results"></div>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const statusEl = $("status"), resultsEl = $("results");
+let STOPS = null;
+
+// Load precomputed dataset once.
+async function loadStops() {
+  if (STOPS) return STOPS;
+  if (location.protocol === "file:") {
+    throw new Error("Abrí el sitio con un servidor (ej: python3 -m http.server) "
+      + "y entrá a http://localhost:8000 — no funciona abriendo el archivo directo.");
+  }
+  statusEl.textContent = "Cargando datos de colectivos…";
+  let res;
+  try {
+    res = await fetch("data/stops.json");
+  } catch {
+    throw new Error("No pude cargar data/stops.json. ¿Está el sitio servido por HTTP?");
+  }
+  if (!res.ok) throw new Error("data/stops.json devolvió HTTP " + res.status);
+  STOPS = await res.json(); // [ [name, lat, lon, [lines...]], ... ]
+  statusEl.textContent = "";
+  return STOPS;
+}
+
+// Haversine distance in meters.
+function distM(lat1, lon1, lat2, lon2) {
+  const R = 6371000, toRad = (d) => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// Geocode an address via OpenStreetMap Nominatim (free, no key), biased to CABA.
+async function geocode(q) {
+  const url = "https://nominatim.openstreetmap.org/search?format=json&limit=1"
+    + "&countrycodes=ar&viewbox=-58.531,-34.526,-58.335,-34.705&bounded=1"
+    + "&q=" + encodeURIComponent(q);
+  let res;
+  try {
+    res = await fetch(url, { headers: { "Accept-Language": "es" } });
+  } catch {
+    throw new Error("No pude contactar el geocodificador (OpenStreetMap). Revisá tu conexión.");
+  }
+  if (!res.ok) throw new Error("El geocodificador devolvió HTTP " + res.status);
+  const data = await res.json();
+  if (!data.length) return null;
+  return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon), label: data[0].display_name };
+}
+
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("go").disabled = true;
+  resultsEl.innerHTML = "";
+  try {
+    const stops = await loadStops();
+    statusEl.textContent = "Buscando dirección…";
+    const loc = await geocode($("addr").value);
+    if (!loc) { statusEl.textContent = "No encontré esa dirección en CABA."; return; }
+
+    const radius = parseInt($("radius").value, 10);
+    const near = [];
+    for (const [name, lat, lon, lines] of stops) {
+      const d = distM(loc.lat, loc.lon, lat, lon);
+      if (d <= radius) near.push({ name, d, lines });
+    }
+    near.sort((a, b) => a.d - b.d);
+
+    if (!near.length) {
+      statusEl.textContent = `Sin paradas a menos de ${radius} m de "${loc.label}".`;
+      return;
+    }
+
+    const allLines = [...new Set(near.flatMap(s => s.lines))]
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    statusEl.textContent = `${near.length} parada(s) dentro de ${radius} m de: ${loc.label}`;
+
+    let html = `<div class="summary"><strong>${allLines.length} línea(s) pasan cerca:</strong>`
+      + `<div class="lines">${allLines.map(l => `<span class="line">${l}</span>`).join("")}</div></div>`;
+    for (const s of near) {
+      html += `<div class="stop"><h3>${s.name}</h3>`
+        + `<div class="dist">a ${Math.round(s.d)} m</div>`
+        + `<div class="lines">${s.lines.map(l => `<span class="line">${l}</span>`).join("")}</div></div>`;
+    }
+    resultsEl.innerHTML = html;
+  } catch (err) {
+    statusEl.textContent = "Error: " + err.message;
+  } finally {
+    $("go").disabled = false;
+  }
+});
+</script>
+</body>
+</html>
